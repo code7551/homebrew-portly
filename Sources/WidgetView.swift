@@ -357,7 +357,7 @@ private struct ScriptChip: View {
     let server: DevServer
 
     var body: some View {
-        Text(verbatim: "\(server.manager) \(server.script)")
+        Text(verbatim: server.label)
             .font(.system(size: 10, design: .monospaced))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 4)

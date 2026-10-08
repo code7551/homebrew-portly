@@ -1,6 +1,6 @@
 cask "portly" do
-  version "1.0.0"
-  sha256 "180d8678eb01140f40a00d6354030057aad45f97b7ccb1aa11bcd049e16b42a7"
+  version "1.1.0"
+  sha256 "c53248d59d64cc5c9aada5d505bf91f7b7af72e3e2dbb06e5f6ec8b87c62e4cc"
 
   url "https://github.com/code7551/homebrew-portly/releases/download/v#{version}/Portly-#{version}.zip"
   name "Portly"

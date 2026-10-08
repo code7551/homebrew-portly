@@ -2,7 +2,7 @@
 
 https://github.com/user-attachments/assets/dd41fca5-b6ad-43c5-bbcf-1236241b7b6a
 
-A macOS menu bar widget that shows every dev server you've started with a package manager — `bun`, `npm`, `pnpm` or `yarn` running a `dev`, `start`, `serve`, `preview` or `develop` script (or variants like `dev:api`) — with the ports it listens on, the project folder, the script and uptime. Open one in the browser, Finder or your terminal, or stop it.
+A macOS menu bar widget that shows every local dev server — started as a package script (`npm run dev`, `bun start`, `pnpm serve`, `yarn preview`, … including variants like `dev:api`), through a package runner (`npx`, `pnpm dlx`, `yarn dlx`, `bunx`), or by running a dev-server CLI such as `next dev` or `vite` directly — with the ports it listens on, the project folder, the command and uptime. Open one in the browser, Finder or your terminal, or stop it.
 
 Requires macOS 14 (Sonoma) or later.
 

@@ -11,7 +11,7 @@ enum Portly {
         if args.contains("--list") {
             for s in Scanner.scan() {
                 let ports = s.ports.isEmpty ? "-" : s.ports.map(String.init).joined(separator: ",")
-                print("\(s.id)\t\(ports)\t\(s.name)\t\(s.manager) \(s.script)\t\(s.directory)")
+                print("\(s.id)\t\(ports)\t\(s.name)\t\(s.label)\t\(s.directory)")
             }
             return
         }

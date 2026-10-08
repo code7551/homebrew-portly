@@ -1,13 +1,12 @@
 import Foundation
 
-/// One `bun run dev` / `npm start` / `pnpm dev` / `yarn serve` … invocation and the ports its process tree listens on.
+/// One dev server — `npm start`, `npx next dev`, `vite`, … — and the ports its process tree listens on.
 struct DevServer: Identifiable, Equatable {
-    let id: pid_t            // pid of the package manager process
+    let id: pid_t            // pid of the process that started it
     let directory: String    // folder holding the package.json
     let packageName: String?
-    let manager: String      // "bun", "npm", "pnpm", "yarn"
-    let script: String       // "dev", "start", "dev:api", …
-    let command: String?     // the script body from package.json, e.g. "next dev"
+    let label: String        // how it was started: "npm start", "npx next dev", "vite"
+    let command: String?     // what actually runs: the package.json script body, or the CLI's own command line
     let ports: [Int]
     let startedAt: Date
 
@@ -39,6 +38,19 @@ enum Scanner {
         for p in procs where candidateComms.contains(p.comm) {
             if let inv = parse(arguments(of: p.pid)) { roots[p.pid] = (p, inv) }
         }
+        // `npm run dev` → `next dev`: the script is the server, not its CLI. Drop a root when something
+        // stronger (script > runner > CLI) started it, so it's listed once, under the name you typed.
+        let parent = Dictionary(procs.map { ($0.pid, $0.ppid) }, uniquingKeysWith: { a, _ in a })
+        for (pid, root) in roots {
+            var cur = parent[pid], hops = 0
+            while let c = cur, c > 1, hops < 64 {
+                if let above = roots[c], above.invocation.kind.rawValue > root.invocation.kind.rawValue {
+                    roots[pid] = nil
+                    break
+                }
+                cur = parent[c]; hops += 1
+            }
+        }
 
         var servers: [DevServer] = []
         for (pid, root) in roots {
@@ -66,9 +78,8 @@ enum Scanner {
                 id: pid,
                 directory: pkg?.directory ?? dir,
                 packageName: pkg?.name,
-                manager: root.invocation.manager,
-                script: root.invocation.script,
-                command: pkg?.scripts[root.invocation.script],
+                label: root.invocation.label,
+                command: root.invocation.script.flatMap { pkg?.scripts[$0] } ?? root.invocation.commandLine,
                 ports: ports,
                 startedAt: root.proc.startedAt
             ))
@@ -110,16 +121,38 @@ enum Scanner {
     // MARK: - Command line parsing
 
     struct Invocation: Equatable {
-        let manager: String
-        let script: String
+        enum Kind: Int { case cli = 0, runner = 1, script = 2 }   // precedence when they nest
+        let kind: Kind
+        let label: String          // "npm start", "npx next dev", "vite"
+        let script: String?        // the package.json script, for script runs
+        let commandLine: String?   // the CLI and its arguments, for runners and direct CLIs
         let cwd: String?
     }
 
-    /// Kernel process names worth reading argv for. npm and classic yarn run as `node`; pnpm and bun are native.
-    private static let candidateComms: Set<String> = ["bun", "node", "npm", "pnpm", "yarn"]
+    /// Kernel process names worth reading argv for. npm, npx and classic yarn run as `node`; pnpm and bun are native.
+    private static let candidateComms: Set<String> = ["bun", "bunx", "node", "npm", "npx", "pnpm", "yarn"]
 
     /// Script names that usually mean "a server is running": dev, start, serve, preview, develop — plus dev:web, start-prod, …
     private static let serverScripts = ["dev", "develop", "start", "serve", "preview"]
+
+    /// Dev-server CLIs and the subcommands that start a server. An empty set means the bare command serves
+    /// (`vite`, `serve`), except for the subcommands in `notServing`.
+    private static let devCLIs: [String: Set<String>] = [
+        "next": ["dev"], "nuxt": ["dev"], "nuxi": ["dev"], "astro": ["dev", "preview"], "remix": ["dev"],
+        "svelte-kit": ["dev"], "react-scripts": ["start"], "webpack": ["serve"], "ng": ["serve"],
+        "vue-cli-service": ["serve"], "expo": ["start"], "gatsby": ["develop"], "docusaurus": ["start"],
+        "wrangler": ["dev"], "vercel": ["dev"], "netlify": ["dev"], "storybook": ["dev"], "rsbuild": ["dev", "preview"],
+        "rspack": ["dev", "serve"], "vinxi": ["dev"],
+        "vite": [], "webpack-dev-server": [], "parcel": [], "serve": [], "http-server": [], "live-server": [],
+        "nodemon": [], "start-storybook": [],
+    ]
+    private static let notServing: Set<String> = ["build", "optimize", "test", "lint", "help", "--help", "-h", "--version", "-v"]
+
+    /// `npm exec next dev` shows up as "npx next dev", and so on.
+    private static let runnerLabels: [String: [String: String]] = [
+        "npm": ["exec": "npx", "x": "npx"], "pnpm": ["exec": "pnpm exec", "dlx": "pnpm dlx"],
+        "yarn": ["exec": "yarn exec", "dlx": "yarn dlx"], "bun": ["x": "bunx"],
+    ]
 
     private static let flagsWithValue: Set<String> = [
         "--cwd", "--prefix", "--dir", "-C", "--filter", "-F", "--workspace", "--env-file", "--config", "-c",
@@ -128,22 +161,37 @@ enum Scanner {
     ]
     private static let cwdFlags: Set<String> = ["--cwd", "--prefix", "--dir", "-C"]
 
-    /// Recognises `bun run dev`, `bun start`, `npm run dev`, `npm start`, `pnpm dev`, `pnpm --dir web run dev`,
-    /// `yarn serve`, `yarn workspace web dev`, `node /path/to/yarn.js dev`, …
+    /// Recognises package scripts (`npm run dev`, `bun start`, `pnpm --dir web dev`, `yarn workspace web dev`, …),
+    /// package runners (`npx next dev`, `pnpm dlx vite`, `bunx serve`, …) and dev-server CLIs run directly
+    /// (`node …/node_modules/.bin/next dev`, `vite`, …).
     static func parse(_ argv: [String]) -> Invocation? {
         var tokens = argv
         // npm overwrites its argv with its process title: ["npm run dev", "", ""].
         if let first = argv.first, first.contains(" "), argv.dropFirst().allSatisfy(\.isEmpty) {
             tokens = first.split(separator: " ").map(String.init)
         }
-        // `node /path/to/yarn.js dev`: skip the interpreter.
-        var start = 0
-        if packageManager(tokens.first) == nil, tokens.first.map(basename) == "node" { start = 1 }
-        guard let manager = packageManager(tokens.count > start ? tokens[start] : nil) else { return nil }
+        guard !tokens.isEmpty else { return nil }
+        // `node /path/to/yarn.js dev`, `node …/node_modules/.bin/next dev`: skip the interpreter.
+        let start = basename(tokens[0]) == "node" && tokens.count > 1 && !tokens[1].hasPrefix("-") ? 1 : 0
 
-        var positional: [String] = []
+        if let manager = packageManager(tokens[start]) {
+            return parseManager(manager, tokens, from: start + 1)
+        }
+        let head = basename(tokens[start])
+        if ["npx", "pnpx", "bunx", "npx-cli.js"].contains(head) {   // npx-cli.js: npm 6's npx run through node
+            return parseRunner(head == "npx-cli.js" ? "npx" : head, tokens, from: start + 1, cwd: nil)
+        }
+        // A dev-server CLI started directly: from node_modules when run through node, or by its own name.
+        guard start == 0 || tokens[start].contains("node_modules/") else { return nil }
+        return devCommand(tokens, at: start).map {
+            Invocation(kind: .cli, label: $0.label, script: nil, commandLine: $0.commandLine, cwd: nil)
+        }
+    }
+
+    private static func parseManager(_ manager: String, _ tokens: [String], from: Int) -> Invocation? {
+        var positional: [(String, Int)] = []
         var cwd: String?
-        var i = start + 1
+        var i = from
         while i < tokens.count && positional.count < 3 {
             let arg = tokens[i]
             i += 1
@@ -156,17 +204,49 @@ enum Scanner {
                 }
                 continue
             }
-            positional.append(arg)
+            positional.append((arg, i - 1))
+            if positional.count == 1, let label = runnerLabels[manager]?[arg] {
+                return parseRunner(label, tokens, from: i, cwd: cwd)
+            }
         }
 
         let script: String?
-        switch positional.first {
-        case "run", "run-script": script = positional.dropFirst().first
-        case "workspace" where manager == "yarn": script = positional.dropFirst(2).first
-        default: script = positional.first
+        switch positional.first?.0 {
+        case "run", "run-script": script = positional.dropFirst().first?.0
+        case "workspace" where manager == "yarn": script = positional.dropFirst(2).first?.0
+        default: script = positional.first?.0
         }
         guard let script, isServerScript(script) else { return nil }
-        return Invocation(manager: manager, script: script, cwd: cwd)
+        return Invocation(kind: .script, label: "\(manager) \(script)", script: script, commandLine: nil, cwd: cwd)
+    }
+
+    /// `npx [flags] [--] <cli> <args>`: a server only if the CLI it runs is one.
+    private static func parseRunner(_ label: String, _ tokens: [String], from: Int, cwd: String?) -> Invocation? {
+        var i = from
+        while i < tokens.count, tokens[i].hasPrefix("-") {
+            if tokens[i] == "--" { i += 1; break }
+            i += ["-p", "--package", "-c", "--call"].contains(tokens[i]) ? 2 : 1
+        }
+        guard i < tokens.count, let cmd = devCommand(tokens, at: i) else { return nil }
+        return Invocation(kind: .runner, label: "\(label) \(cmd.label)", script: nil, commandLine: cmd.commandLine, cwd: cwd)
+    }
+
+    /// Whether `tokens[at...]` starts a dev server — `next dev`, `vite`, `react-scripts start` — and how to name it.
+    private static func devCommand(_ tokens: [String], at: Int) -> (label: String, commandLine: String)? {
+        var cli = basename(tokens[at])
+        for ext in [".js", ".cjs", ".mjs"] where cli.hasSuffix(ext) { cli.removeLast(ext.count) }
+        guard let serving = devCLIs[cli] else { return nil }
+        let args = Array(tokens[(at + 1)...])
+        let sub = args.first { !$0.hasPrefix("-") }
+        let label: String
+        if serving.isEmpty {
+            if let sub, notServing.contains(sub) { return nil }
+            label = sub.map { ["dev", "serve", "preview", "start"].contains($0) ? "\(cli) \($0)" : cli } ?? cli
+        } else {
+            guard let sub, serving.contains(sub) else { return nil }
+            label = "\(cli) \(sub)"
+        }
+        return (label, ([cli] + args).joined(separator: " "))
     }
 
     private static func packageManager(_ token: String?) -> String? {
