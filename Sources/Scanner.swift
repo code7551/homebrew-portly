@@ -39,12 +39,14 @@ enum Scanner {
             if let inv = parse(arguments(of: p.pid)) { roots[p.pid] = (p, inv) }
         }
         // `npm run dev` → `next dev`: the script is the server, not its CLI. Drop a root when something
-        // stronger (script > runner > CLI) started it, so it's listed once, under the name you typed.
+        // stronger (script > runner > CLI > file) started it, so it's listed once, under the name you typed.
+        // A file run gives way to any launcher above it, `node --watch server.js` restarting `node server.js` included.
         let parent = Dictionary(procs.map { ($0.pid, $0.ppid) }, uniquingKeysWith: { a, _ in a })
         for (pid, root) in roots {
             var cur = parent[pid], hops = 0
             while let c = cur, c > 1, hops < 64 {
-                if let above = roots[c], above.invocation.kind.rawValue > root.invocation.kind.rawValue {
+                if let above = roots[c],
+                   above.invocation.kind.rawValue > root.invocation.kind.rawValue || root.invocation.kind == .file {
                     roots[pid] = nil
                     break
                 }
@@ -67,13 +69,16 @@ enum Scanner {
                 stack += children[c] ?? []
             }
             let ports = Array(Set(owned.flatMap(listeningPorts))).sorted()
-            if ports.isEmpty && hasNestedRoot { continue }
+            let isFile = root.invocation.kind == .file
+            if ports.isEmpty && (hasNestedRoot || isFile) { continue }
 
             var dir = currentDirectory(of: pid) ?? "/"
             if let cwd = root.invocation.cwd {
                 dir = URL(fileURLWithPath: cwd, relativeTo: URL(fileURLWithPath: dir, isDirectory: true)).standardizedFileURL.path
             }
             let pkg = packageInfo(near: dir)
+            // A file run is a dev server only when it's a project's own file, not some app's or tool's bundled node code.
+            if isFile && (pkg == nil || isToolPath(dir)) { continue }
             servers.append(DevServer(
                 id: pid,
                 directory: pkg?.directory ?? dir,
@@ -121,11 +126,11 @@ enum Scanner {
     // MARK: - Command line parsing
 
     struct Invocation: Equatable {
-        enum Kind: Int { case cli = 0, runner = 1, script = 2 }   // precedence when they nest
+        enum Kind: Int { case file = 0, cli = 1, runner = 2, script = 3 }   // precedence when they nest
         let kind: Kind
-        let label: String          // "npm start", "npx next dev", "vite"
+        let label: String          // "npm start", "npx next dev", "vite", "node server.js"
         let script: String?        // the package.json script, for script runs
-        let commandLine: String?   // the CLI and its arguments, for runners and direct CLIs
+        let commandLine: String?   // the CLI and its arguments, for runners, direct CLIs and file runs
         let cwd: String?
     }
 
@@ -162,8 +167,8 @@ enum Scanner {
     private static let cwdFlags: Set<String> = ["--cwd", "--prefix", "--dir", "-C"]
 
     /// Recognises package scripts (`npm run dev`, `bun start`, `pnpm --dir web dev`, `yarn workspace web dev`, …),
-    /// package runners (`npx next dev`, `pnpm dlx vite`, `bunx serve`, …) and dev-server CLIs run directly
-    /// (`node …/node_modules/.bin/next dev`, `vite`, …).
+    /// package runners (`npx next dev`, `pnpm dlx vite`, `bunx serve`, …), dev-server CLIs run directly
+    /// (`node …/node_modules/.bin/next dev`, `vite`, …) and files run by node or bun (`node server.js`, `bun --hot src/index.ts`).
     static func parse(_ argv: [String]) -> Invocation? {
         var tokens = argv
         // npm overwrites its argv with its process title: ["npm run dev", "", ""].
@@ -171,8 +176,13 @@ enum Scanner {
             tokens = first.split(separator: " ").map(String.init)
         }
         guard !tokens.isEmpty else { return nil }
-        // `node /path/to/yarn.js dev`, `node …/node_modules/.bin/next dev`: skip the interpreter.
-        let start = basename(tokens[0]) == "node" && tokens.count > 1 && !tokens[1].hasPrefix("-") ? 1 : 0
+        // `node /path/to/yarn.js dev`, `node --watch server.js`: skip the interpreter and its flags.
+        var start = 0
+        if basename(tokens[0]) == "node" {
+            start = 1
+            while start < tokens.count, tokens[start].hasPrefix("-") { start += flagsWithValue.contains(tokens[start]) ? 2 : 1 }
+            guard start < tokens.count else { return nil }
+        }
 
         if let manager = packageManager(tokens[start]) {
             return parseManager(manager, tokens, from: start + 1)
@@ -182,10 +192,10 @@ enum Scanner {
             return parseRunner(head == "npx-cli.js" ? "npx" : head, tokens, from: start + 1, cwd: nil)
         }
         // A dev-server CLI started directly: from node_modules when run through node, or by its own name.
-        guard start == 0 || tokens[start].contains("node_modules/") else { return nil }
-        return devCommand(tokens, at: start).map {
-            Invocation(kind: .cli, label: $0.label, script: nil, commandLine: $0.commandLine, cwd: nil)
+        if start == 0 || tokens[start].contains("node_modules/"), let cmd = devCommand(tokens, at: start) {
+            return Invocation(kind: .cli, label: cmd.label, script: nil, commandLine: cmd.commandLine, cwd: nil)
         }
+        return start > 0 ? fileRun("node", tokens[start], tokens) : nil
     }
 
     private static func parseManager(_ manager: String, _ tokens: [String], from: Int) -> Invocation? {
@@ -216,8 +226,26 @@ enum Scanner {
         case "workspace" where manager == "yarn": script = positional.dropFirst(2).first?.0
         default: script = positional.first?.0
         }
-        guard let script, isServerScript(script) else { return nil }
+        guard let script else { return nil }
+        // `bun server.ts`, `bun run server.ts`: bun runs a file the same way it runs a script.
+        if manager == "bun", let run = fileRun("bun", script, tokens) { return run }
+        guard isServerScript(script) else { return nil }
         return Invocation(kind: .script, label: "\(manager) \(script)", script: script, commandLine: nil, cwd: cwd)
+    }
+
+    /// `node server.js`, `bun --watch src/index.ts`: a runtime running a file, which `scan` keeps only when it
+    /// listens and belongs to a project. The file's folder stands in for the cwd, so `node ~/code/api/server.js` lands in api.
+    private static func fileRun(_ runtime: String, _ file: String, _ tokens: [String]) -> Invocation? {
+        guard [".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".jsx", ".tsx"].contains(where: file.hasSuffix) else { return nil }
+        let dir = (file as NSString).deletingLastPathComponent
+        return Invocation(kind: .file, label: "\(runtime) \(file.hasPrefix("/") ? basename(file) : file)", script: nil,
+                          commandLine: ([runtime] + tokens.dropFirst()).joined(separator: " "), cwd: dir.isEmpty ? nil : dir)
+    }
+
+    /// Where apps and tools keep their own node code: ~/.vscode, ~/.npm/_npx, node_modules, ~/Library, app bundles.
+    private static func isToolPath(_ path: String) -> Bool {
+        path.contains("/.") || path.contains("/node_modules") || path.contains("/Library/")
+            || path.hasPrefix("/Applications/") || path.contains(".app/")
     }
 
     /// `npx [flags] [--] <cli> <args>`: a server only if the CLI it runs is one.
