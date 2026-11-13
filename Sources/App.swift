@@ -201,6 +201,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             else if isReturn { store.open(server) }
             else if plain && key == kVK_ANSI_F { store.reveal(server) }
             else if plain && key == kVK_ANSI_T { store.openTerminal(server) }
+            else if plain && key == kVK_ANSI_E { store.openEditor(server) }
             else if mods.contains(.command) { return handleShortcut(mods, chars, event) }
             return true
         }

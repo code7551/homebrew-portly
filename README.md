@@ -2,7 +2,7 @@
 
 https://github.com/user-attachments/assets/dd41fca5-b6ad-43c5-bbcf-1236241b7b6a
 
-A macOS menu bar widget that shows every local dev server — started as a package script (`npm run dev`, `bun start`, `pnpm serve`, `yarn preview`, … including variants like `dev:api`), through a package runner (`npx`, `pnpm dlx`, `yarn dlx`, `bunx`), by running a dev-server CLI such as `next dev` or `vite` directly, or as a project file run by node or bun (`node server.js`, `bun --watch src/index.ts`) — with the ports it listens on, the project folder, the command and uptime. Open one in the browser, Finder or your terminal, or stop it.
+A macOS menu bar widget that shows every local dev server — started as a package script (`npm run dev`, `bun start`, `pnpm serve`, `yarn preview`, … including variants like `dev:api`), through a package runner (`npx`, `pnpm dlx`, `yarn dlx`, `bunx`), by running a dev-server CLI such as `next dev` or `vite` directly, or as a project file run by node or bun (`node server.js`, `bun --watch src/index.ts`) — with the ports it listens on, the project folder, the command and uptime. Open one in the browser, Finder, your terminal or your editor (VS Code, Cursor, … or a Claude Code session), or stop it.
 
 Requires macOS 14 (Sonoma) or later.
 
@@ -13,7 +13,7 @@ brew install --cask code7551/portly/portly
 open -a Portly
 ```
 
-After the first launch it starts at login (turn that off in its ⋯ menu). The cask also links a `portly` command.
+After the first launch it starts at login (turn that off in its ⋯ menu, where you can also pick the browser, terminal and editor Portly opens). The cask also links a `portly` command.
 
 To uninstall:
 
@@ -28,7 +28,7 @@ brew uninstall --cask code7551/portly/portly
 | --- | --- |
 | ⌃⌥B (global) | open / close Portly |
 | ↑ ↓ | select |
-| click a row, ↩ or → | slide to the server's page: ports, path, command, uptime; open the site (↩), the folder in Finder (F) or your terminal (T), or Stop Server |
+| click a row, ↩ or → | slide to the server's page: ports, path, command, uptime; open the site (↩), the folder in Finder (F), your terminal (T) or your editor (E), or Stop Server |
 | ‹ Back, esc or ← | back to the list |
 | click the port badge | open `http://localhost:<port>` directly |
 | ⌘R / ⌘Q / esc | refresh / quit / close |

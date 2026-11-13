@@ -104,6 +104,18 @@ private struct ListPage: View {
                     .disabled(store.servers.isEmpty)
                 Button("Refresh  ⌘R", action: store.refresh)
                 Divider()
+                Picker("Browser", selection: Binding(get: { store.browserID ?? "" }, set: { store.setBrowser($0.isEmpty ? nil : $0) })) {
+                    Text("System Default (\(Apps.name(Apps.defaultBrowser)))").tag("")
+                    Divider()
+                    ForEach(Apps.browsers, id: \.id) { Text(Apps.name($0.app)).tag($0.id) }
+                }
+                Picker("Terminal", selection: Binding(get: { Apps.terminal(store.terminalID).flatMap { Bundle(url: $0)?.bundleIdentifier } ?? "" },
+                                                      set: store.setTerminal)) {
+                    ForEach(Apps.terminals, id: \.id) { Text(Apps.name($0.app)).tag($0.id) }
+                }
+                Picker("Editor", selection: Binding(get: { Apps.editor(store.editorID)?.id ?? "" }, set: store.setEditor)) {
+                    ForEach(Apps.editors, id: \.id) { Text($0.name).tag($0.id) }
+                }
                 Toggle("Launch at Login", isOn: Binding(get: { store.launchAtLogin }, set: { _ in store.toggleLaunchAtLogin() }))
                 Text("Show Portly: ⌃⌥B")
                 Divider()
@@ -195,7 +207,10 @@ private struct ServerRow: View {
                 Button("Copy URL") { store.copyURL(server, port: port) }
             }
             Button("Open in Finder") { store.reveal(server) }
-            Button("Open in \(Apps.name(Apps.terminal))") { store.openTerminal(server) }
+            Button("Open in \(Apps.name(Apps.terminal(store.terminalID)))") { store.openTerminal(server) }
+            if let editor = Apps.editor(store.editorID) {
+                Button("Open in \(editor.name)") { store.openEditor(server) }
+            }
             Divider()
             Button("Stop Server…") { store.openDetail(server, confirmStop: true) }
         }
@@ -228,13 +243,19 @@ private struct DetailPage: View {
             VStack(alignment: .leading, spacing: 14) {
                 info
                 HStack(spacing: 8) {
-                    ActionTile(title: server.primaryPort.map { "localhost:\($0)" } ?? "Not listening", key: "↩") {
-                        AppIcon(Apps.browser)
+                    ActionTile(title: Apps.name(Apps.browser(store.browserID)), key: "↩") {
+                        AppIcon(Apps.browser(store.browserID))
                     } action: { store.open(server) }
                         .disabled(server.primaryPort == nil)
+                        .help(server.primaryPort.map { "Open http://localhost:\($0)" } ?? "Not listening yet")
                     ActionTile(title: "Finder", key: "F") { AppIcon(Apps.finder) } action: { store.reveal(server) }
-                    ActionTile(title: Apps.name(Apps.terminal), key: "T") { AppIcon(Apps.terminal) } action: {
+                    ActionTile(title: Apps.name(Apps.terminal(store.terminalID)), key: "T") {
+                        AppIcon(Apps.terminal(store.terminalID))
+                    } action: {
                         store.openTerminal(server)
+                    }
+                    if let editor = Apps.editor(store.editorID) {
+                        ActionTile(title: editor.name, key: "E") { AppIcon(editor.app) } action: { store.openEditor(server) }
                     }
                 }
                 stopSection

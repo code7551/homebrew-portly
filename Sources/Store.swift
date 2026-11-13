@@ -7,6 +7,12 @@ final class Store: ObservableObject {
     @Published var selection = 0
     @Published private(set) var stopping: Set<pid_t> = []
     @Published private(set) var launchAtLogin = SMAppService.mainApp.status == .enabled
+    /// Bundle id of the browser servers open in; nil follows the system default.
+    @Published private(set) var browserID = UserDefaults.standard.string(forKey: Store.browserKey)
+    /// Bundle id of the terminal folders open in; nil means Warp if installed, otherwise Terminal.
+    @Published private(set) var terminalID = UserDefaults.standard.string(forKey: Store.terminalKey)
+    /// Bundle id of the editor folders open in, or `Apps.claudeCode`; nil means the first installed of VS Code, Cursor, ….
+    @Published private(set) var editorID = UserDefaults.standard.string(forKey: Store.editorKey)
     @Published private(set) var page: Page = .list
     @Published private(set) var confirming: Confirm?
 
@@ -124,7 +130,15 @@ final class Store: ObservableObject {
 
     func open(_ server: DevServer, port: Int? = nil) {
         guard let port = port ?? server.primaryPort, let url = URL(string: "http://localhost:\(port)") else { return }
-        NSWorkspace.shared.open(url)
+        guard let app = Apps.browser(browserID) else { NSWorkspace.shared.open(url); return }
+        NSWorkspace.shared.open([url], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+    }
+
+    private static let browserKey = "browser"
+
+    func setBrowser(_ id: String?) {
+        UserDefaults.standard.set(id, forKey: Self.browserKey)
+        browserID = id
     }
 
     func copyURL(_ server: DevServer, port: Int) {
@@ -137,9 +151,38 @@ final class Store: ObservableObject {
     }
 
     func openTerminal(_ server: DevServer) {
-        guard let app = Apps.terminal else { return }
+        guard let app = Apps.terminal(terminalID) else { return }
         NSWorkspace.shared.open([URL(fileURLWithPath: server.directory, isDirectory: true)], withApplicationAt: app,
                                 configuration: NSWorkspace.OpenConfiguration())
+    }
+
+    private static let terminalKey = "terminal"
+
+    func setTerminal(_ id: String) {
+        UserDefaults.standard.set(id, forKey: Self.terminalKey)
+        terminalID = id
+    }
+
+    func openEditor(_ server: DevServer) {
+        guard let editor = Apps.editor(editorID) else { return }
+        guard editor.id == Apps.claudeCode else {
+            NSWorkspace.shared.open([URL(fileURLWithPath: server.directory, isDirectory: true)], withApplicationAt: editor.app,
+                                    configuration: NSWorkspace.OpenConfiguration())
+            return
+        }
+        // `+` would read as a space, `&` and `=` as the next parameter.
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "+&=")
+        guard let cwd = server.directory.addingPercentEncoding(withAllowedCharacters: allowed),
+              let link = URL(string: "claude-cli://open?cwd=\(cwd)") else { return }
+        NSWorkspace.shared.open(link)
+    }
+
+    private static let editorKey = "editor"
+
+    func setEditor(_ id: String) {
+        UserDefaults.standard.set(id, forKey: Self.editorKey)
+        editorID = id
     }
 
     func moveSelection(_ delta: Int) {
